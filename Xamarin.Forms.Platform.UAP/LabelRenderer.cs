@@ -77,6 +77,7 @@ namespace Xamarin.Forms.Platform.UWP
 			}
 			rect.Height = childHeight;
 			rect.Width = finalSize.Width;
+			
 			Control.Arrange(rect);
 			Control.RecalculateSpanPositions(Element, _inlineHeights);
 			return finalSize;
@@ -140,14 +141,19 @@ namespace Xamarin.Forms.Platform.UWP
 				UpdateAlign(Control);
 				UpdateFont(Control);
 				UpdateLineBreakMode(Control);
+				UpdateMaxLines(Control);
 				UpdateDetectReadingOrderFromContent(Control);
+				UpdateLineHeight(Control);
 			}
 		}
 
 		protected override void OnElementPropertyChanged(object sender, PropertyChangedEventArgs e)
 		{
-			if (e.PropertyName == Label.TextProperty.PropertyName || e.PropertyName == Label.FormattedTextProperty.PropertyName)
+			if (e.PropertyName == Label.TextProperty.PropertyName ||
+				e.PropertyName == Label.FormattedTextProperty.PropertyName)
+			{
 				UpdateText(Control);
+			}
 			else if (e.PropertyName == Label.TextColorProperty.PropertyName)
 				UpdateColor(Control);
 			else if (e.PropertyName == Label.HorizontalTextAlignmentProperty.PropertyName || e.PropertyName == Label.VerticalTextAlignmentProperty.PropertyName)
@@ -164,6 +170,8 @@ namespace Xamarin.Forms.Platform.UWP
 				UpdateDetectReadingOrderFromContent(Control);
 			else if (e.PropertyName == Label.LineHeightProperty.PropertyName)
 				UpdateLineHeight(Control);
+			else if (e.PropertyName == Label.MaxLinesProperty.PropertyName)
+				UpdateMaxLines(Control);
 			base.OnElementPropertyChanged(sender, e);
 		}
 
@@ -195,7 +203,7 @@ namespace Xamarin.Forms.Platform.UWP
 			}
 			else
 			{
-				textBlock.Text = textBlock.Text; 
+				textBlock.Text = textBlock.Text;
 			}
 
 		}
@@ -274,20 +282,28 @@ namespace Xamarin.Forms.Platform.UWP
 				case LineBreakMode.HeadTruncation:
 					// TODO: This truncates at the end.
 					textBlock.TextTrimming = TextTrimming.WordEllipsis;
-					textBlock.TextWrapping = TextWrapping.NoWrap;
+					DetermineTruncatedTextWrapping(textBlock);
 					break;
 				case LineBreakMode.TailTruncation:
 					textBlock.TextTrimming = TextTrimming.CharacterEllipsis;
-					textBlock.TextWrapping = TextWrapping.NoWrap;
+					DetermineTruncatedTextWrapping(textBlock);
 					break;
 				case LineBreakMode.MiddleTruncation:
 					// TODO: This truncates at the end.
 					textBlock.TextTrimming = TextTrimming.WordEllipsis;
-					textBlock.TextWrapping = TextWrapping.NoWrap;
+					DetermineTruncatedTextWrapping(textBlock);
 					break;
 				default:
 					throw new ArgumentOutOfRangeException();
 			}
+		}
+
+		void DetermineTruncatedTextWrapping(TextBlock textBlock)
+		{
+			if (Element.MaxLines > 1)
+				textBlock.TextWrapping = TextWrapping.Wrap;
+			else
+				textBlock.TextWrapping = TextWrapping.NoWrap;
 		}
 
 		void UpdateText(TextBlock textBlock)
@@ -295,7 +311,9 @@ namespace Xamarin.Forms.Platform.UWP
 			_perfectSizeValid = false;
 
 			if (textBlock == null)
+			{
 				return;
+			}
 
 			Label label = Element;
 			if (label != null)
@@ -345,10 +363,22 @@ namespace Xamarin.Forms.Platform.UWP
 		{
 			if (textBlock == null)
 				return;
-			
+
 			if (Element.LineHeight >= 0)
 			{
 				textBlock.LineHeight = Element.LineHeight * textBlock.FontSize;
+			}
+		}
+
+		void UpdateMaxLines(TextBlock textBlock)
+		{
+			if (Element.MaxLines >= 0)
+			{
+				textBlock.MaxLines = Element.MaxLines;
+			}
+			else
+			{
+				textBlock.MaxLines = 0;
 			}
 		}
 	}

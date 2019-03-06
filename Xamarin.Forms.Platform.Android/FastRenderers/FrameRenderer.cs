@@ -2,6 +2,7 @@ using System;
 using System.ComponentModel;
 using Android.Content;
 using Android.Graphics.Drawables;
+using Android.Support.V4.View;
 using Android.Support.V7.Widget;
 using Android.Views;
 using Xamarin.Forms.Platform.Android.FastRenderers;
@@ -10,7 +11,7 @@ using AView = Android.Views.View;
 
 namespace Xamarin.Forms.Platform.Android.FastRenderers
 {
-	public class FrameRenderer : CardView, IVisualElementRenderer, IEffectControlProvider, IViewRenderer
+	public class FrameRenderer : CardView, IVisualElementRenderer, IEffectControlProvider, IViewRenderer, ITabStop
 	{
 		float _defaultElevation = -1f;
 		float _defaultCornerRadius = -1f;
@@ -37,6 +38,7 @@ namespace Xamarin.Forms.Platform.Android.FastRenderers
 		}
 
 		[Obsolete("This constructor is obsolete as of version 2.5. Please use FrameRenderer(Context) instead.")]
+		[EditorBrowsable(EditorBrowsableState.Never)]
 		public FrameRenderer() : base(Forms.Context)
 		{
 			_gestureManager = new GestureManager(this);
@@ -44,6 +46,8 @@ namespace Xamarin.Forms.Platform.Android.FastRenderers
 		}
 
 		protected CardView Control => this;
+
+		AView ITabStop.TabStop => this;
 
 		protected Frame Element
 		{
@@ -87,9 +91,9 @@ namespace Xamarin.Forms.Platform.Android.FastRenderers
 		void IVisualElementRenderer.SetLabelFor(int? id)
 		{
 			if (_defaultLabelFor == null)
-				_defaultLabelFor = LabelFor;
+				_defaultLabelFor = ViewCompat.GetLabelFor(this);
 
-			LabelFor = (int)(id ?? _defaultLabelFor);
+			ViewCompat.SetLabelFor(this, (int)(id ?? _defaultLabelFor));
 		}
 
 		VisualElementTracker IVisualElementRenderer.Tracker => _visualElementTracker;

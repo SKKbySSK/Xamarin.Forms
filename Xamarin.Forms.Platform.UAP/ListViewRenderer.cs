@@ -19,18 +19,24 @@ using Xamarin.Forms.Internals;
 using Xamarin.Forms.PlatformConfiguration.WindowsSpecific;
 using Specifics = Xamarin.Forms.PlatformConfiguration.WindowsSpecific.ListView;
 using System.Collections.ObjectModel;
+using UwpScrollBarVisibility = Windows.UI.Xaml.Controls.ScrollBarVisibility;
+using WSelectionChangedEventArgs = Windows.UI.Xaml.Controls.SelectionChangedEventArgs;
 
 namespace Xamarin.Forms.Platform.UWP
 {
 	public class ListViewRenderer : ViewRenderer<ListView, FrameworkElement>
 	{
 		ITemplatedItemsView<Cell> TemplatedItemsView => Element;
-		ObservableCollection<object> SourceItems => _context?.Source as ObservableCollection<object>;
-		CollectionViewSource _context;
+		bool _collectionIsWrapped;
+		IList _collection = null;
 		bool _itemWasClicked;
 		bool _subscribedToItemClick;
 		bool _subscribedToTapped;
 		bool _disposed;
+		CollectionViewSource _collectionViewSource;	
+
+		UwpScrollBarVisibility? _defaultHorizontalScrollVisibility;
+		UwpScrollBarVisibility? _defaultVerticalScrollVisibility;
 
 		protected WListView List { get; private set; }
 
@@ -64,14 +70,12 @@ namespace Xamarin.Forms.Platform.UWP
 					};
 
 					List.SelectionChanged += OnControlSelectionChanged;
-
-					List.SetBinding(ItemsControl.ItemsSourceProperty, "");
 				}
 
 				ReloadData();
 
 				if (Element.SelectedItem != null)
-					OnElementItemSelected(null, new SelectedItemChangedEventArgs(Element.SelectedItem));
+					OnElementItemSelected(null, new SelectedItemChangedEventArgs(Element.SelectedItem, TemplatedItemsView.TemplatedItems.GetGlobalIndexOfItem(Element.SelectedItem)));
 
 				UpdateGrouping();
 				UpdateHeader();
@@ -79,79 +83,121 @@ namespace Xamarin.Forms.Platform.UWP
 				UpdateSelectionMode();
 				UpdateWindowsSpecificSelectionMode();
 				ClearSizeEstimate();
+				UpdateVerticalScrollBarVisibility();
+				UpdateHorizontalScrollBarVisibility();
 			}
+		}
+
+		bool IsObservableCollection(object source)
+		{
+			var type = source.GetType();
+			return type.IsGenericType &&
+				   type.GetGenericTypeDefinition() == typeof(ObservableCollection<>);
 		}
 
 		void ReloadData()
 		{
-			if (Element?.ItemsSource == null && _context != null)
-				_context.Source = null;
-
-			var allSourceItems = new ObservableCollection<object>();
-
-			if (Element?.ItemsSource != null)
+			if (Element?.ItemsSource == null)
 			{
-				foreach (var item in Element.ItemsSource)
-					allSourceItems.Add(item);
+				_collection = null;
+			}
+			else
+			{
+				_collectionIsWrapped = !IsObservableCollection(Element.ItemsSource);
+				if (_collectionIsWrapped)
+				{
+					_collection = new ObservableCollection<object>();
+					foreach (var item in Element.ItemsSource)
+						_collection.Add(item);
+				}
+				else
+				{
+					_collection = (IList)Element.ItemsSource;
+				}
 			}
 
-			// WinRT throws an exception if you set ItemsSource directly to a CVS, so bind it.
-			List.DataContext = _context = new CollectionViewSource
+			if (_collectionViewSource != null)
+				_collectionViewSource.Source = null;
+
+			_collectionViewSource = new CollectionViewSource
 			{
-				Source = allSourceItems,
+				Source = _collection,
 				IsSourceGrouped = Element.IsGroupingEnabled
 			};
+
+			List.ItemsSource = _collectionViewSource.View;
 		}
 
 		void OnCollectionChanged(object sender, NotifyCollectionChangedEventArgs e)
 		{
-			switch (e.Action)
+			if (_collectionIsWrapped && _collection != null)
 			{
-				case NotifyCollectionChangedAction.Add:
-					if (e.NewStartingIndex < 0)
-						goto case NotifyCollectionChangedAction.Reset;
+				switch (e.Action)
+				{
+					case NotifyCollectionChangedAction.Add:
+						if (e.NewStartingIndex < 0)
+							goto case NotifyCollectionChangedAction.Reset;
 
-					// if a NewStartingIndex that's too high is passed in just add the items.
-					// I realize this is enforcing bad behavior but prior to this synchronization
-					// code being added it wouldn't cause the app to crash whereas now it does
-					// so this code accounts for that in order to ensure smooth sailing for the user
-					if (e.NewStartingIndex >= SourceItems.Count)
-					{
-						for (int i = 0; i < e.NewItems.Count; i++)
-							SourceItems.Add((e.NewItems[i] as BindableObject).BindingContext);
-					}
-					else
-					{
-						for (int i = e.NewItems.Count - 1; i >= 0; i--)
-							SourceItems.Insert(e.NewStartingIndex, (e.NewItems[i] as BindableObject).BindingContext);
-					}
-
-					break;
-				case NotifyCollectionChangedAction.Remove:
-					for (int i = e.OldItems.Count - 1; i >= 0; i--)
-						SourceItems.RemoveAt(e.OldStartingIndex);
-					break;
-				case NotifyCollectionChangedAction.Move:
-					for (var i = 0; i < e.OldItems.Count; i++)
-					{
-						var oldi = e.OldStartingIndex;
-						var newi = e.NewStartingIndex;
-
-						if (e.NewStartingIndex < e.OldStartingIndex)
+						// if a NewStartingIndex that's too high is passed in just add the items.
+						// I realize this is enforcing bad behavior but prior to this synchronization
+						// code being added it wouldn't cause the app to crash whereas now it does
+						// so this code accounts for that in order to ensure smooth sailing for the user
+						if (e.NewStartingIndex >= _collection.Count)
 						{
-							oldi += i;
-							newi += i;
+							for (int i = 0; i < e.NewItems.Count; i++)
+								_collection.Add((e.NewItems[i] as BindableObject).BindingContext);
+						}
+						else
+						{
+							for (int i = e.NewItems.Count - 1; i >= 0; i--)
+								_collection.Insert(e.NewStartingIndex, (e.NewItems[i] as BindableObject).BindingContext);
 						}
 
-						SourceItems.Move(oldi, newi);
-					}
-					break;
-				case NotifyCollectionChangedAction.Replace:
-				case NotifyCollectionChangedAction.Reset:
-				default:
-					ClearSizeEstimate();
-					ReloadData();
-					break;
+						break;
+					case NotifyCollectionChangedAction.Remove:
+						for (int i = e.OldItems.Count - 1; i >= 0; i--)
+							_collection.RemoveAt(e.OldStartingIndex);
+						break;
+					case NotifyCollectionChangedAction.Move:
+						{
+							var collection = (ObservableCollection<object>)_collection;
+							for (var i = 0; i < e.OldItems.Count; i++)
+							{
+								var oldi = e.OldStartingIndex;
+								var newi = e.NewStartingIndex;
+
+								if (e.NewStartingIndex < e.OldStartingIndex)
+								{
+									oldi += i;
+									newi += i;
+								}
+
+								collection.Move(oldi, newi);
+							}
+						}
+						break;
+					case NotifyCollectionChangedAction.Replace:
+						{
+							var collection = (ObservableCollection<object>)_collection;
+							var newi = e.NewStartingIndex;
+							for (var i = 0; i < e.NewItems.Count; i++)
+							{
+								newi += i;
+								collection[newi] = (e.NewItems[i] as BindableObject).BindingContext;
+							}
+						}
+						break;
+					case NotifyCollectionChangedAction.Reset:
+					default:
+						ClearSizeEstimate();
+						ReloadData();
+						break;
+				}
+			}
+			else if (e.Action == NotifyCollectionChangedAction.Reset)
+			{
+				ClearSizeEstimate();
+				ReloadData();
 			}
 
 			Device.BeginInvokeOnMainThread(() => List?.UpdateLayout());
@@ -193,6 +239,14 @@ namespace Xamarin.Forms.Platform.UWP
 			{
 				UpdateWindowsSpecificSelectionMode();
 			}
+			else if (e.PropertyName == ListView.VerticalScrollBarVisibilityProperty.PropertyName)
+			{
+				UpdateVerticalScrollBarVisibility();
+			}
+			else if (e.PropertyName == ListView.HorizontalScrollBarVisibilityProperty.PropertyName)
+			{
+				UpdateHorizontalScrollBarVisibility();
+			}
 		}
 
 		protected override void Dispose(bool disposing)
@@ -223,8 +277,17 @@ namespace Xamarin.Forms.Platform.UWP
 						_subscribedToItemClick = false;
 						List.ItemClick -= OnListItemClicked;
 					}
+
 					List.SelectionChanged -= OnControlSelectionChanged;
+					if (_collectionViewSource != null)
+						_collectionViewSource.Source = null;
+
 					List.DataContext = null;
+
+					// Leaving this here as a warning because setting this to null causes
+					// an AccessViolationException if you run Issue1975
+					// List.ItemsSource = null;
+
 					List = null;
 				}
 
@@ -297,8 +360,8 @@ namespace Xamarin.Forms.Platform.UWP
 		{
 			bool grouping = Element.IsGroupingEnabled;
 
-			if (_context != null)
-				_context.IsSourceGrouped = grouping;
+			if (_collectionViewSource != null)
+				_collectionViewSource.IsSourceGrouped = grouping;
 
 			var templatedItems = TemplatedItemsView.TemplatedItems;
 			if (grouping && templatedItems.ShortNames != null)
@@ -383,6 +446,44 @@ namespace Xamarin.Forms.Platform.UWP
 					_subscribedToItemClick = false;
 					List.ItemClick -= OnListItemClicked;
 				}
+			}
+		}
+
+		void UpdateVerticalScrollBarVisibility()
+		{
+			if (_defaultVerticalScrollVisibility == null)
+				_defaultVerticalScrollVisibility = ScrollViewer.GetVerticalScrollBarVisibility(Control);
+
+			switch (Element.VerticalScrollBarVisibility)
+			{
+				case (ScrollBarVisibility.Always):
+					ScrollViewer.SetVerticalScrollBarVisibility(Control, UwpScrollBarVisibility.Visible);
+					break;
+				case (ScrollBarVisibility.Never):
+					ScrollViewer.SetVerticalScrollBarVisibility(Control, UwpScrollBarVisibility.Hidden);
+					break;
+				case (ScrollBarVisibility.Default):
+					ScrollViewer.SetVerticalScrollBarVisibility(Control, (UwpScrollBarVisibility)_defaultVerticalScrollVisibility);
+					break;
+			}
+		}
+
+		void UpdateHorizontalScrollBarVisibility()
+		{
+			if (_defaultHorizontalScrollVisibility == null)
+				_defaultHorizontalScrollVisibility = ScrollViewer.GetHorizontalScrollBarVisibility(Control);
+
+			switch (Element.HorizontalScrollBarVisibility)
+			{
+				case (ScrollBarVisibility.Always):
+					ScrollViewer.SetHorizontalScrollBarVisibility(Control, UwpScrollBarVisibility.Visible);
+					break;
+				case (ScrollBarVisibility.Never):
+					ScrollViewer.SetHorizontalScrollBarVisibility(Control, UwpScrollBarVisibility.Hidden);
+					break;
+				case (ScrollBarVisibility.Default):
+					ScrollViewer.SetHorizontalScrollBarVisibility(Control, (UwpScrollBarVisibility)_defaultHorizontalScrollVisibility);
+					break;
 			}
 		}
 
@@ -621,9 +722,9 @@ namespace Xamarin.Forms.Platform.UWP
 			List.SelectedIndex = index;
 		}
 
-		void OnListItemClicked(int index)
+		void OnListItemClicked(int index, Cell cell = null)
 		{
-			Element.NotifyRowTapped(index, cell: null);
+			Element.NotifyRowTapped(index, cell);
 			_itemWasClicked = true;
 		}
 
@@ -634,11 +735,11 @@ namespace Xamarin.Forms.Platform.UWP
 				var templatedItems = TemplatedItemsView.TemplatedItems;
 				var selectedItemIndex = templatedItems.GetGlobalIndexOfItem(e.ClickedItem);
 
-				OnListItemClicked(selectedItemIndex);
+				OnListItemClicked(selectedItemIndex, e.ClickedItem as Cell);
 			}
 		}
 
-		void OnControlSelectionChanged(object sender, SelectionChangedEventArgs e)
+		void OnControlSelectionChanged(object sender, WSelectionChangedEventArgs e)
 		{
 			if (Element.SelectedItem != List.SelectedItem)
 			{

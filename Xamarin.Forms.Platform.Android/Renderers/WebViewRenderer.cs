@@ -15,10 +15,13 @@ namespace Xamarin.Forms.Platform.Android
 {
 	public class WebViewRenderer : ViewRenderer<WebView, AWebView>, IWebViewDelegate
 	{
-		bool _ignoreSourceChanges;
+		public const string AssetBaseUrl = "file:///android_asset/";
+
+		WebViewClient _webViewClient;
 		FormsWebChromeClient _webChromeClient;
 
-		IWebViewController ElementController => Element;
+		protected internal IWebViewController ElementController => Element;
+		protected internal bool IgnoreSourceChanges { get; set; }
 
 		public WebViewRenderer(Context context) : base(context)
 		{
@@ -26,6 +29,7 @@ namespace Xamarin.Forms.Platform.Android
 		}
 
 		[Obsolete("This constructor is obsolete as of version 2.5. Please use WebViewRenderer(Context) instead.")]
+		[EditorBrowsable(EditorBrowsableState.Never)]
 		public WebViewRenderer()
 		{
 			AutoPackage = false;
@@ -33,7 +37,7 @@ namespace Xamarin.Forms.Platform.Android
 
 		public void LoadHtml(string html, string baseUrl)
 		{
-			Control.LoadDataWithBaseURL(baseUrl == null ? "file:///android_asset/" : baseUrl, html, "text/html", "UTF-8", null);
+			Control.LoadDataWithBaseURL(baseUrl ?? AssetBaseUrl, html, "text/html", "UTF-8", null);
 		}
 
 		public void LoadUrl(string url)
@@ -47,17 +51,24 @@ namespace Xamarin.Forms.Platform.Android
 			{
 				if (Element != null)
 				{
-					if (Control != null)
-						Control.StopLoading();
+					Control?.StopLoading();
+
 					ElementController.EvalRequested -= OnEvalRequested;
 					ElementController.GoBackRequested -= OnGoBackRequested;
 					ElementController.GoForwardRequested -= OnGoForwardRequested;
+					ElementController.ReloadRequested -= OnReloadRequested;
 
+					_webViewClient?.Dispose();
 					_webChromeClient?.Dispose();
 				}
 			}
 
 			base.Dispose(disposing);
+		}
+
+		protected virtual WebViewClient GetWebViewClient()
+		{
+			return new FormsWebViewClient(this);
 		}
 
 		protected virtual FormsWebChromeClient GetFormsWebChromeClient()
@@ -85,10 +96,12 @@ namespace Xamarin.Forms.Platform.Android
 #pragma warning disable 618 // This can probably be replaced with LinearLayout(LayoutParams.MatchParent, LayoutParams.MatchParent); just need to test that theory
 				webView.LayoutParameters = new global::Android.Widget.AbsoluteLayout.LayoutParams(LayoutParams.MatchParent, LayoutParams.MatchParent, 0, 0);
 #pragma warning restore 618
-				webView.SetWebViewClient(new WebClient(this));
+
+				_webViewClient = GetWebViewClient();
+				webView.SetWebViewClient(_webViewClient);
 
 				_webChromeClient = GetFormsWebChromeClient();
-				_webChromeClient.SetContext(Context as Activity);
+				_webChromeClient.SetContext(Context);
 				webView.SetWebChromeClient(_webChromeClient);
 
 				webView.Settings.JavaScriptEnabled = true;
@@ -103,6 +116,7 @@ namespace Xamarin.Forms.Platform.Android
 				oldElementController.EvaluateJavaScriptRequested -= OnEvaluateJavaScriptRequested;
 				oldElementController.GoBackRequested -= OnGoBackRequested;
 				oldElementController.GoForwardRequested -= OnGoForwardRequested;
+				oldElementController.ReloadRequested -= OnReloadRequested;
 			}
 
 			if (e.NewElement != null)
@@ -112,8 +126,11 @@ namespace Xamarin.Forms.Platform.Android
 				newElementController.EvaluateJavaScriptRequested += OnEvaluateJavaScriptRequested;
 				newElementController.GoBackRequested += OnGoBackRequested;
 				newElementController.GoForwardRequested += OnGoForwardRequested;
+				newElementController.ReloadRequested += OnReloadRequested;
 
 				UpdateMixedContentMode();
+				UpdateEnableZoomControls();
+				UpdateDisplayZoomControls();
 			}
 
 			Load();
@@ -131,16 +148,21 @@ namespace Xamarin.Forms.Platform.Android
 				case "MixedContentMode":
 					UpdateMixedContentMode();
 					break;
+				case "EnableZoomControls":
+					UpdateEnableZoomControls();
+					break;
+				case "DisplayZoomControls":
+					UpdateDisplayZoomControls();
+					break;
 			}
 		}
 
 		void Load()
 		{
-			if (_ignoreSourceChanges)
+			if (IgnoreSourceChanges)
 				return;
 
-			if (Element.Source != null)
-				Element.Source.Load(this);
+			Element.Source?.Load(this);
 
 			UpdateCanGoBackForward();
 		}
@@ -175,7 +197,12 @@ namespace Xamarin.Forms.Platform.Android
 			UpdateCanGoBackForward();
 		}
 
-		void UpdateCanGoBackForward()
+		void OnReloadRequested(object sender, EventArgs eventArgs)
+		{
+			Control.Reload();
+		}
+
+		protected internal void UpdateCanGoBackForward()
 		{
 			if (Element == null || Control == null)
 				return;
@@ -191,77 +218,16 @@ namespace Xamarin.Forms.Platform.Android
 			}
 		}
 
-		class WebClient : WebViewClient
+		void UpdateEnableZoomControls()
 		{
-			WebNavigationResult _navigationResult = WebNavigationResult.Success;
-			WebViewRenderer _renderer;
+			var value = Element.OnThisPlatform().EnableZoomControls();
+			Control.Settings.SetSupportZoom(value);
+			Control.Settings.BuiltInZoomControls = value;
+		}
 
-			public WebClient(WebViewRenderer renderer)
-			{
-				if (renderer == null)
-					throw new ArgumentNullException("renderer");
-				_renderer = renderer;
-			}
-
-			public override void OnPageFinished(AWebView view, string url)
-			{
-				if (_renderer.Element == null || url == "file:///android_asset/")
-					return;
-
-				var source = new UrlWebViewSource { Url = url };
-				_renderer._ignoreSourceChanges = true;
-				_renderer.ElementController.SetValueFromRenderer(WebView.SourceProperty, source);
-				_renderer._ignoreSourceChanges = false;
-
-				var args = new WebNavigatedEventArgs(WebNavigationEvent.NewPage, source, url, _navigationResult);
-
-				_renderer.ElementController.SendNavigated(args);
-
-				_renderer.UpdateCanGoBackForward();
-
-				base.OnPageFinished(view, url);
-			}
-
-			[Obsolete("OnReceivedError is obsolete as of version 2.3.0. This method was deprecated in API level 23.")]
-			public override void OnReceivedError(AWebView view, ClientError errorCode, string description, string failingUrl)
-			{
-				_navigationResult = WebNavigationResult.Failure;
-				if (errorCode == ClientError.Timeout)
-					_navigationResult = WebNavigationResult.Timeout;
-#pragma warning disable 618
-				base.OnReceivedError(view, errorCode, description, failingUrl);
-#pragma warning restore 618
-			}
-
-			public override void OnReceivedError(AWebView view, IWebResourceRequest request, WebResourceError error)
-			{
-				_navigationResult = WebNavigationResult.Failure;
-				if (error.ErrorCode == ClientError.Timeout)
-					_navigationResult = WebNavigationResult.Timeout;
-				base.OnReceivedError(view, request, error);
-			}
-
-			[Obsolete]
-			public override bool ShouldOverrideUrlLoading(AWebView view, string url)
-			{
-				if (_renderer.Element == null)
-					return true;
-
-				var args = new WebNavigatingEventArgs(WebNavigationEvent.NewPage, new UrlWebViewSource { Url = url }, url);
-
-				_renderer.ElementController.SendNavigating(args);
-				_navigationResult = WebNavigationResult.Success;
-
-				_renderer.UpdateCanGoBackForward();
-				return args.Cancel;
-			}
-
-			protected override void Dispose(bool disposing)
-			{
-				base.Dispose(disposing);
-				if (disposing)
-					_renderer = null;
-			}
+		void UpdateDisplayZoomControls()
+		{
+			Control.Settings.DisplayZoomControls = Element.OnThisPlatform().DisplayZoomControls();
 		}
 
 		class JavascriptResult : Java.Lang.Object, IValueCallback
